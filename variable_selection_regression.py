@@ -10,8 +10,7 @@ from sklearn.preprocessing import StandardScaler
 from wrc_pls import weighted_regression_coefficient
 from vip_pls import variable_importance_in_projection
 from sfs_pls_regression import sequential_feature_selection
-#from spa_regression import SPA
-from spa_classification import SPA
+from spa import SPA
 
 def main(argv):
   ### Begining of program
