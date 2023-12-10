@@ -5,72 +5,7 @@ from sklearn import model_selection
 from sklearn.cross_decomposition import PLSRegression
 from sklearn.metrics import mean_squared_error, r2_score
 from scipy.linalg import qr
-
-def mean_categorical_cross_entropy(y_true, y_pred):
-  '''
-  Normalize y_pred which don't have minus element and their sum have 1.0
-  ---
-  y_true : Y true set in 2D of # validation samples x # classes
-  y_pred : Y predict set in 2D of # validation samples x # classes
-  ---
-  return Mean Categorical Cross Entropy
-  '''
-  y_norm = y_pred.copy()
-  for i, yh in enumerate(y_norm):
-    for j in range(yh.shape[0]):
-      if yh[j] < 0:
-        y_norm[i, :] += (-yh[j] + 0.01) / (yh.shape[0] - 1)
-        y_norm[i, j] = 0.01
-
-  cce = np.array([-np.sum(y * np.log(yh)) for y, yh in zip(y_true, y_norm)])
-  return np.mean(cce)
-
-def apply_pls_regression(components, xcalib, ycalib, cv, xvalid, yvalid):
-  '''
-  Perform PLS calibration and validation in the way of K-fold Cross Validation or extra validation set.
-  ---
-  components : the number of PLS components
-  xcalib : X calibration set in 2D of # calibration samples x # variables
-  ycalib : Y calibration set in 1D of # calibration samples
-  cv : k-fold cross validation
-  xvalid : X validation set in 2D of # validation samples x # variables
-  yvalid : Y validation set in 1D of # validation samples
-  ---
-  return : Mean Squared Error according to K-fold Cross Validation or Extra validation
-  '''
-  pls = PLSRegression(n_components=components)
-  if cv is not None:
-    ypred = model_selection.cross_val_predict(pls, xcalib, ycalib, cv=cv)
-    mse = mean_squared_error(ycalib, ypred)
-  else:
-    pls.fit(xcalib, ycalib)
-    ypred = pls.predict(xvalid)
-    mse = mean_squared_error(yvalid, ypred)
-  return mse
-
-def apply_pls_da(components, xcalib, ycalib, cv, xvalid, yvalid):
-  '''
-  Perform PLS-DA calibration and validation in the way of K-fold Cross Validation or extra validation set.
-  ---
-  components : the number of PLS-DA components
-  xcalib : X calibration set in 2D of # calibration samples x # variables
-  ycalib : Y calibration set in 2D of # calibration samples x # classes
-  cv : k-fold cross validation
-  xvalid : X validation set in 2D of # validation samples x # variables
-  yvalid : Y validation set in 2D of # validation samples x # classes
-  ---
-  return : Mean Categorical Cross Entropy
-  '''
-  pls = PLSRegression(n_components=components)
-  if cv is not None:
-    ypred = model_selection.cross_val_predict(pls, xcalib, ycalib, cv=cv)
-    mcce = mean_categorical_cross_entropy(ycalib, ypred)
-  else:
-    pls.fit(xcalib, ycalib)
-    ypred = pls.predict(xvalid)
-    mcce = mean_categorical_cross_entropy(yvalid, ypred)
-
-  return mcce
+from pls_apply import mean_categorical_cross_entropy, apply_pls_da, apply_pls_regression
 
 class PLSVariableSelector:
   @classmethod
@@ -644,7 +579,6 @@ class PLSVariableSelector:
     # print('reference_variable_index:\n', reference_variable_index)
     return reference_variable_index[:max_variables].T
 
-
   @classmethod
   def getIndicesBySuccessiveProjectionAlgorithm(
           cls, xcalib, ycalib, min_variables, max_variables,
@@ -761,3 +695,400 @@ class PLSVariableSelector:
       )
 
     return optimal_variable_indices[descending_variable_score_indices], loss_log, np.argmin(loss_log, axis=0)
+
+def test_variable_selection_for_pls_regression():
+  from sklearn import datasets
+  from sklearn.preprocessing import StandardScaler
+  import matplotlib
+  matplotlib.use('Qt5Agg')
+  import matplotlib.pyplot as plt
+  from sklearn.model_selection import train_test_split
+  from pls_variable_select import PLSVariableSelector
+
+  sample = datasets.load_diabetes()
+  print('samle.feature_names\n', sample.feature_names)
+  print('sample.data\n', sample.data.shape)
+  print('sample.target\n', sample.target.shape)
+  X = sample.data
+  Y = sample.target
+
+  ### Preprocessing
+  xscaler = StandardScaler()
+  xscaler.fit(X)
+  X = xscaler.transform(X)
+  # preprocessX = xScaler.inverse_transform(preprocessX)
+
+  yscaler = StandardScaler()
+  Y = Y.reshape(-1, 1)
+  yscaler.fit(Y)
+  Y = yscaler.transform(Y)
+  Y = Y.reshape(-1)
+
+  ### Extra validation set
+  x_calib, x_valid, y_calib, y_valid = train_test_split(X, Y, test_size=0.33)
+  cv = None
+
+  ### 10-fold cross validation
+  # x_calib = X
+  # y_calib = Y
+  # x_valid = None
+  # y_valid = None
+  # cv = 10
+
+  fig = plt.figure(figsize=(16,9))
+  fig.canvas.manager.set_window_title("Variable Selection")
+  fig.tight_layout()
+  plt.subplots_adjust(left=0.05, bottom=0.05, right=0.95, top=0.95, wspace=0.5, hspace=0.3)
+
+  print("### getRemovalIndicesByFixedScoreXStd ###")
+  variable_indices, mse, min_mse_index = PLSVariableSelector.getRemovalIndicesByFixedScoreXStd(
+    x_calib, y_calib, components=5, max_removal_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MSE', verbose=False
+  )
+
+  removeable_variable_indices = variable_indices[:min_mse_index]
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  optimal_variable_indices = np.array(set(range(x_calib.shape[1])) - set(removeable_variable_indices))
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (0, 0), rowspan=1, colspan=2)
+    ax1.plot(mse, '-', color='blue', mfc='blue')
+    ax1.plot(min_mse_index, mse[min_mse_index], 'P', ms=10, mfc='red')
+    # ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of removeable variables')
+    ax1.set_ylabel('Mean Square Error')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    ax1.grid(True)
+    ax1.set_title('Fixed Weight (PLS Coeff x Variable Std)')
+    # ax1.text(0.5, np.max(mse), , color='r')
+
+  print("### getRemovalIndicesByUpdatingScoreXStd ###")
+  variable_indices, mse, min_mse_index = PLSVariableSelector.getRemovalIndicesByUpdatingScoreXStd(
+    x_calib, y_calib, components=5, max_removal_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MSE', verbose=False
+  )
+
+  removeable_variable_indices = variable_indices[:min_mse_index]
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  optimal_variable_indices = np.array(set(range(x_calib.shape[1])) - set(removeable_variable_indices))
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (0, 2), rowspan=1, colspan=2)
+    ax1.plot(mse, '-', color='blue', mfc='blue')
+    ax1.plot(min_mse_index, mse[min_mse_index], 'P', ms=10, mfc='red')
+    # ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of removeable variables')
+    ax1.set_ylabel('Mean Square Error')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    ax1.grid(True)
+    ax1.set_title('Updating Weight (PLS Coeff x Variable Std)')
+
+  print("### getRemovalIndicesByFixedVariableImportanceInProjection ###")
+  variable_indices, mse, min_mse_index = PLSVariableSelector.getRemovalIndicesByFixedVariableImportanceInProjection(
+    x_calib, y_calib, components=5, max_removal_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MSE', verbose=False
+  )
+
+  removeable_variable_indices = variable_indices[:min_mse_index]
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  optimal_variable_indices = np.array(set(range(x_calib.shape[1])) - set(removeable_variable_indices))
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (1, 0), rowspan=1, colspan=2)
+    ax1.plot(mse, '-', color='blue', mfc='blue')
+    ax1.plot(min_mse_index, mse[min_mse_index], 'P', ms=10, mfc='red')
+    # ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of removeable variables')
+    ax1.set_ylabel('Mean Square Error')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    ax1.grid(True)
+    ax1.set_title('Fixed Variable Importance in Projection')
+
+  print("### getRemovalIndicesByUpdatingVariableImportanceInProjection ###")
+  variable_indices, mse, min_mse_index = PLSVariableSelector.getRemovalIndicesByUpdatingVariableImportanceInProjection(
+    x_calib, y_calib, components=5, max_removal_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MSE', verbose=False
+  )
+
+  removeable_variable_indices = variable_indices[:min_mse_index]
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  optimal_variable_indices = np.array(set(range(x_calib.shape[1])) - set(removeable_variable_indices))
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (1, 2), rowspan=1, colspan=2)
+    ax1.plot(mse, '-', color='blue', mfc='blue')
+    ax1.plot(min_mse_index, mse[min_mse_index], 'P', ms=10, mfc='red')
+    # ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of removeable variables')
+    ax1.set_ylabel('Mean Square Error')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    ax1.grid(True)
+    ax1.set_title('Updating Variable Importance in Projection')
+
+  print("### getRemovalIndicesBySequentialSearch ###")
+  variable_indices, mse, min_mse_index = PLSVariableSelector.getRemovalIndicesBySequentialSearch(
+    x_calib, y_calib, components=5, max_removal_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MSE', verbose=False
+  )
+
+  removeable_variable_indices = variable_indices[:min_mse_index]
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  optimal_variable_indices = np.array(set(range(x_calib.shape[1])) - set(removeable_variable_indices))
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (0, 4), rowspan=1, colspan=2)
+    ax1.plot(mse, '-', color='blue', mfc='blue')
+    ax1.plot(min_mse_index, mse[min_mse_index], 'P', ms=10, mfc='red')
+    # ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of removeable variables')
+    ax1.set_ylabel('Mean Square Error')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    ax1.grid(True)
+    ax1.set_title('Sequential Searching for min MSE')
+
+  print("### getIndicesBySuccessiveProjectionAlgorithm ###")
+  variable_indices, mse, min_mse_index = PLSVariableSelector.getIndicesBySuccessiveProjectionAlgorithm(
+    x_calib, y_calib, min_variables=3, max_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MSE', verbose=False
+  )
+
+  optimal_variable_indices = variable_indices[:min_mse_index+1]
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  removeable_variable_indices = np.array(set(range(x_calib.shape[1])) - set(optimal_variable_indices))
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (1, 4), rowspan=1, colspan=2)
+    ax1.plot(mse, '-', color='blue', mfc='blue')
+    ax1.plot(min_mse_index, mse[min_mse_index], 'P', ms=10, mfc='red')
+    ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of Selected Variables')
+    ax1.set_ylabel('Mean Square Error')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    # ax1.set_xlim(left=-1)
+    ax1.grid(True)
+    ax1.set_title('Successive Projection Algorithm')
+
+  plt.show()
+
+def test_variable_selection_for_pls_da():
+  from sklearn import datasets
+  from sklearn.preprocessing import StandardScaler
+  import matplotlib
+  matplotlib.use('Qt5Agg')
+  import matplotlib.pyplot as plt
+  from sklearn.model_selection import train_test_split
+  from pls_variable_select import PLSVariableSelector
+
+  '''
+  PLS-DA : PLS for classification
+  https://stackoverflow.com/questions/18390150/pls-da-algorithm-in-python
+  '''
+  sample = datasets.load_wine()
+  print('sample.feature_names\n', sample.feature_names)
+  print('sample.data\n', sample.data)
+  print('sample.target\n', sample.target)
+  X = sample.data
+  Y_label = sample.target # as one-hot style
+
+  Y = np.zeros((Y_label.size, Y_label.max()+1), dtype=np.int32)
+  Y[np.arange(Y_label.size), Y_label] = 1
+  print('one-hot style\n', Y)  ### Preprocessing
+  xscaler = StandardScaler()
+  #yscaler = StandardScaler()
+
+  xscaler.fit(X)
+  X = xscaler.transform(X)
+  # preprocessX = xScaler.inverse_transform(preprocessX)
+
+  print('X:\n', X)
+  print('Y:\n', Y)
+
+  # # Extra validation set
+  # x_calib, x_valid, y_calib, y_valid = train_test_split(X, Y, test_size=0.33)
+  # cv = None
+
+  # 10-fold cross validation
+  x_calib = X
+  y_calib = Y
+  cv = 10
+  x_valid = None
+  y_valid = None
+
+  fig = plt.figure(figsize=(16,9))
+  fig.canvas.manager.set_window_title(
+    "Find removal variables based on PLS coeff x variable Std, VIP, and sequential searching,\
+     and optimal variabled based on Successive Projection Algorithm"
+  )
+  fig.tight_layout()
+  plt.subplots_adjust(left=0.05, bottom=0.05, right=0.95, top=0.95, wspace=0.5, hspace=0.3)
+
+  print("### getRemovalIndicesByFixedScoreXStd ###")
+  variable_indices, mcce, min_mcce_index = PLSVariableSelector.getRemovalIndicesByFixedScoreXStd(
+    x_calib, y_calib, components=5, max_removal_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MCCE', verbose=False
+  )
+
+  removeable_variable_indices = variable_indices[:min_mcce_index]
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  optimal_variable_indices = np.array(set(range(x_calib.shape[1])) - set(removeable_variable_indices))
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (0, 0), rowspan=1, colspan=2)
+    ax1.plot(mcce, '-', color='blue', mfc='blue')
+    ax1.plot(min_mcce_index, mcce[min_mcce_index], 'P', ms=10, mfc='red')
+    # ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of removeable variables')
+    ax1.set_ylabel('Mean Categorical Cross Entropy')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    ax1.grid(True)
+    ax1.set_title('Fixed Weight (PLS Coeff x Variable Std)')
+    # ax1.text(0.5, np.max(mse), , color='r')
+
+  print("### getRemovalIndicesByUpdatingScoreXStd ###")
+  variable_indices, mcce, min_mcce_index = PLSVariableSelector.getRemovalIndicesByUpdatingScoreXStd(
+    x_calib, y_calib, components=5, max_removal_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MCCE', verbose=False
+  )
+
+  removeable_variable_indices = variable_indices[:min_mcce_index]
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  optimal_variable_indices = np.array(set(range(x_calib.shape[1])) - set(removeable_variable_indices))
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (0, 2), rowspan=1, colspan=2)
+    ax1.plot(mcce, '-', color='blue', mfc='blue')
+    ax1.plot(min_mcce_index, mcce[min_mcce_index], 'P', ms=10, mfc='red')
+    # ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of removeable variables')
+    ax1.set_ylabel('Mean Categrical Cross Entropy')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    ax1.grid(True)
+    ax1.set_title('Updating Weight (PLS Coeff x Variable Std)')
+
+  print("### getRemovalIndicesByFixedVariableImportanceInProjection ###")
+  variable_indices, mcce, min_mcce_index = PLSVariableSelector.getRemovalIndicesByFixedVariableImportanceInProjection(
+    x_calib, y_calib, components=5, max_removal_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MCCE', verbose=False
+  )
+
+  removeable_variable_indices = variable_indices[:min_mcce_index]
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  optimal_variable_indices = np.array(set(range(x_calib.shape[1])) - set(removeable_variable_indices))
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (1, 0), rowspan=1, colspan=2)
+    ax1.plot(mcce, '-', color='blue', mfc='blue')
+    ax1.plot(min_mcce_index, mcce[min_mcce_index], 'P', ms=10, mfc='red')
+    # ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of removeable variables')
+    ax1.set_ylabel('Mean Categorical Cross Entropy')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    ax1.grid(True)
+    ax1.set_title('Fixed Variable Importance in Projection')
+
+  print("### getRemovalIndicesByUpdatingVariableImportanceInProjection ###")
+  variable_indices, mcce, min_mcce_index = PLSVariableSelector.getRemovalIndicesByUpdatingVariableImportanceInProjection(
+    x_calib, y_calib, components=5, max_removal_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MCCE', verbose=False
+  )
+
+  removeable_variable_indices = variable_indices[:min_mcce_index]
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  optimal_variable_indices = np.array(set(range(x_calib.shape[1])) - set(removeable_variable_indices))
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (1, 2), rowspan=1, colspan=2)
+    ax1.plot(mcce, '-', color='blue', mfc='blue')
+    ax1.plot(min_mcce_index, mcce[min_mcce_index], 'P', ms=10, mfc='red')
+    # ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of removeable variables')
+    ax1.set_ylabel('Mean Categorical Cross Entropy')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    ax1.grid(True)
+    ax1.set_title('Updating Variable Importance in Projection')
+
+  print("### getRemovalIndicesBySequentialSearch ###")
+  variable_indices, mcce, min_mcce_index = PLSVariableSelector.getRemovalIndicesBySequentialSearch(
+    x_calib, y_calib, components=5, max_removal_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MCCE', verbose=False
+  )
+
+  removeable_variable_indices = variable_indices[:min_mcce_index]
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  optimal_variable_indices = np.array(set(range(x_calib.shape[1])) - set(removeable_variable_indices))
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (0, 4), rowspan=1, colspan=2)
+    ax1.plot(mcce, '-', color='blue', mfc='blue')
+    ax1.plot(min_mcce_index, mcce[min_mcce_index], 'P', ms=10, mfc='red')
+    # ax1.set_xticks(range(0, len(mse)), [ str(x) for x in range(1, len(mse)+1)])
+    ax1.set_xlabel('# of removeable variables')
+    ax1.set_ylabel('Mean Categorical Cross Entropy')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    ax1.grid(True)
+    ax1.set_title('Sequential Searching for min MCCE')
+
+  print("### getIndicesBySuccessiveProjectionAlgorithm ###")
+  variable_indices, mcce, min_mcce_index = PLSVariableSelector.getIndicesBySuccessiveProjectionAlgorithm(
+    x_calib, y_calib, min_variables=3, max_variables=x_calib.shape[1],
+    xvalid=x_valid, yvalid=y_valid, cv=cv, loss='MCCE', verbose=False
+  )
+
+  optimal_variable_indices = variable_indices[:min_mcce_index + 1]
+  print("Optimal Variable's Indices:\n", optimal_variable_indices)
+
+  removeable_variable_indices = np.array(set(range(x_calib.shape[1])) - set(optimal_variable_indices))
+  print("Removeable Variable's Indices:\n", removeable_variable_indices)
+
+  with plt.style.context(('ggplot')):
+    ax1 = plt.subplot2grid((2, 6), (1, 4), rowspan=1, colspan=2)
+    ax1.plot(mcce, '-', color='blue', mfc='blue')
+    ax1.plot(min_mcce_index, mcce[min_mcce_index], 'P', ms=10, mfc='red')
+    ax1.set_xticks(range(0, len(mcce)), [str(x) for x in range(1, len(mcce) + 1)])
+    ax1.set_xlabel('# of Selected Variables')
+    ax1.set_ylabel('Mean Categorical Cross Entropy')
+    ax1.tick_params(axis='x')
+    ax1.tick_params(axis='y')
+    # ax1.set_xlim(left=-1)
+    ax1.grid(True)
+    ax1.set_title('Successive Projection Algorithm')
+
+  plt.show()
+
+if __name__ == '__main__':
+  test_variable_selection_for_pls_regression()
+  test_variable_selection_for_pls_da()
+  sys.exit(0)
